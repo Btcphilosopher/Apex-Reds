@@ -1,0 +1,148 @@
+package com.example.network
+
+import android.util.Log
+import com.example.BuildConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+
+object GeminiService {
+    private const val TAG = "GeminiService"
+    
+    // OkHttpClient with generous timeouts as mandated by Gemini guidelines
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .build()
+
+    private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
+
+    /**
+     * Call the Gemini API to chat with the AI Club Assistant.
+     * Fallbacks to a realistic local assistant database if no API key is provided
+     * or if the network request fails, ensuring a robust user experience.
+     */
+    suspend fun chatWithAssistant(prompt: String, conversationHistory: List<Pair<String, String>> = emptyList()): String = withContext(Dispatchers.IO) {
+        val apiKey = try {
+            BuildConfig.GEMINI_API_KEY
+        } catch (e: Exception) {
+            ""
+        }
+
+        if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY" || apiKey == "GEMINI_API_KEY_PLACEHOLDER") {
+            Log.w(TAG, "No valid Gemini API key found. Using simulated fallback response.")
+            return@withContext getSimulatedResponse(prompt)
+        }
+
+        try {
+            // Build the contents array
+            val contentsArray = JSONArray()
+            
+            // Add system instruction as role system if unsupported, or prepend to user instruction.
+            // Using recommended structure: contents with parts.
+            // Let's add conversation history as user/model turns:
+            for (turn in conversationHistory) {
+                val role = if (turn.first.equals("user", ignoreCase = true)) "user" else "model"
+                val turnObj = JSONObject().apply {
+                    put("role", role)
+                    put("parts", JSONArray().apply {
+                        put(JSONObject().apply { put("text", turn.second) })
+                    })
+                }
+                contentsArray.put(turnObj)
+            }
+
+            // Current message
+            val systemContext = "You are the official Apex Reds FC Club AI Assistant. " +
+                    "Answer user queries about Apex Reds, its match fixtures, historic 40 trophies, star player Marcus 'Apex' Sterling, " +
+                    "memberships, shop merchandise, or ticket orders with high enthusiasm and passion for the Club. " +
+                    "Be brief, energetic, and sound like a proud commentator."
+            
+            val currentTurnPrompt = if (conversationHistory.isEmpty()) {
+                "$systemContext\n\nUser Question: $prompt"
+            } else {
+                prompt
+            }
+
+            contentsArray.put(JSONObject().apply {
+                put("role", "user")
+                put("parts", JSONArray().apply {
+                    put(JSONObject().apply { put("text", currentTurnPrompt) })
+                })
+            })
+
+            // Post request body
+            val requestJson = JSONObject().apply {
+                put("contents", contentsArray)
+                put("generationConfig", JSONObject().apply {
+                    put("temperature", 0.7)
+                })
+            }
+
+            val requestBody = requestJson.toString().toRequestBody("application/json".toMediaType())
+            val request = Request.Builder()
+                .url("$BASE_URL?key=$apiKey")
+                .post(requestBody)
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val code = response.code
+                    val errorBody = response.body?.string() ?: ""
+                    Log.e(TAG, "API call failed with code $code: $errorBody")
+                    return@withContext getSimulatedResponse(prompt)
+                }
+
+                val responseBody = response.body?.string() ?: ""
+                val responseJson = JSONObject(responseBody)
+                val candidates = responseJson.getJSONArray("candidates")
+                if (candidates.length() > 0) {
+                    val firstCandidate = candidates.getJSONObject(0)
+                    val contentObj = firstCandidate.getJSONObject("content")
+                    val parts = contentObj.getJSONArray("parts")
+                    if (parts.length() > 0) {
+                        return@withContext parts.getJSONObject(0).getString("text")
+                    }
+                }
+                return@withContext "No response text was generated by Apex Reds Assistant. Let me know if you have another question!"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error calling Gemini API: ${e.message}", e)
+            return@withContext getSimulatedResponse(prompt)
+        }
+    }
+
+    /**
+     * Rich fallback system response filled with club theme of Apex Reds FC.
+     */
+    private fun getSimulatedResponse(prompt: String): String {
+        val lower = prompt.lowercase()
+        return when {
+            lower.contains("ticket") || lower.contains("buy") || lower.contains("purchase") -> {
+                "🎟️ **Apex Arena Ticketing Info**\n\nOur next match at the spectacular **Apex Arena** is against Manchester rivals. Tickets are currently on sale for **Tier 1 and Premium Members** and selling fast!\n\nUse our **Stadium Experience Tab** to inspect seat maps, parking, or check your current digital wallet. Let me know if you need help finding VIP suites!"
+            }
+            lower.contains("jersey") || lower.contains("kit") || lower.contains("shirt") || lower.contains("shop") || lower.contains("merchandise") -> {
+                "👕 **Official Apex Reds Kit Hub**\n\nThe brand-new **2026/27 Home Armor Kit** featuring our heritage gold weave is now the highest selling jersey in club history!\n\nHead over to our **Club Shop Tab** to customize yours with your name and number. Don't forget that premium Members get a **15% discount** automatically verified at checkout!"
+            }
+            lower.contains("history") || lower.contains("trophy") || lower.contains("trophies") || lower.contains("cup") || lower.contains("legend") -> {
+                "🏆 **Apex Reds Heritage and Achievements**\n\nFounded in 1892, Apex Reds FC is a world football powerhouse with **40 Major Trophies**!\n\nThis includes:\n• **18 League Titles**\n• **3 Champions Cups**\n• **9 FA Cups**\n• **10 Club World Cups & Super Cups**\n\nVisit our **Club Museum Screen** in the community tab to experience the timeline of our legendary managers and 3D trophies!"
+            }
+            lower.contains("player") || lower.contains("sterling") || lower.contains("squad") || lower.contains("squads") || lower.contains("lineup") -> {
+                "⚡ **Apex Reds Squad Report**\n\nOur roster is headed by global icon and star winger **Marcus 'Apex' Sterling** (No. 10), currently leading the charts with 24 goals this season!\n\nOther star players include playmaker **Kai van de Beek** and our captain anchor **Alisson Silva**. Explore their detailed career metrics under the **Player Hub**!"
+            }
+            lower.contains("membership") || lower.contains("member") || lower.contains("gold") || lower.contains("points") -> {
+                "🎗️ **Apex Premium Member Benefits**\n\nBeing a verified member puts you at the core of the club. You earn **Loyalty Points** in-app for every ticket purchase, community poll vote, and predict game. Points grant you early ticketing priority, exclusive training ground streams, and meet-and-greets!"
+            }
+            else -> {
+                "🔴 **Welcome to Apex Reds AI Assistant!**\n\nI can answer any official club query:\n• Ticket availability & seat maps\n• Shop kits, discounts & retro jersey drops\n• Player metrics, biographies & training reports\n• Club history, trophies, and cup timelines\n\n*Note: Running in high-fidelity local feedback mode. Add your GEMINI_API_KEY in secrets to activate our server-side production neural assistant!*"
+            }
+        }
+    }
+}

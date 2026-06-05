@@ -1,0 +1,6 @@
+{
+  "name": "Apex Reds",
+  "description": "The premium official club app for Apex Reds FC: Live matchday broadcasts, Netflix-quality media streaming, custom kits e-commerce, interactive ticketing, and our local AI Club Assistant powered by Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
